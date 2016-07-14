@@ -25,7 +25,7 @@ if sys.version_info < (3, 0):
 
 setup(
     name='pypez',
-    version="0.1.0",
+    version="0.1.4",
     description='simple pipelines in python',
     long_description=long_description,
     author='Ben',

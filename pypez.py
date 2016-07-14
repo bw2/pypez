@@ -16,37 +16,69 @@ if sys.version_info < (3,0):
 else:
     from subprocess import Popen
 
+def init_command_line_args():
+    p = configargparse.getArgumentParser() # usage="usage: %prog [options] [arg1] .. ")
+
+    #p.add("--LSF", dest="use_LSF", action="store_true", help="Execute each command as an LSF job.")
+    #p.add("--SGE", dest="use_SGE", action="store_true", help="Execute each command as an SGE job.")
+    p.add("-t", "--test", dest="is_test", action="store_true", help="Prints all commands without "
+          "actually running them. -t overrides all other options (eg. -f, -F).")
+    p.add("-F", "--force_all", dest="should_force_all", action="store_true", help="Forces execution of all commands "
+          "even if their output files are up to date.")
+    p.add("-f", "--force", dest="force_these", action="append", help="Forces execution of specific step(s) "
+          "(-f 1.1  or -f myscript) even if their output files are up to date.")
+    
+    p.add("-o", "--only", dest="only_these", action="append", help="Only execute commands matching the "
+          "given pattern (eg. -o 1.3 or -o myscript). -o can be specified more than once to run several specific "
+          "commands and nothing else. -o can be used with -f, -F to force the execution of the given command(s).")
+    p.add("-b", "--begin", dest="begin_with_these", action="append", help="Execute commands starting at this "
+          "command (eg. -b 1.3 or -b myscript). -b can be specified more than once, in which case they are OR'd "
+          "together. -b can be used together with -e and/or -f, -F to execute a specific subset of commands.")
+    p.add("-e", "--end", dest="end_with_these", action="append", help="Execute commands up to and including this "
+          "command (eg. -e 1.3 or -e myscript). -e can be specified more than once, in which case they are OR'd "
+          "together. -e can be used together with -b and/or -f, -F to execute a specific subset of commands.")
+    
+    p.add("-p", "--num_processes", type=int, help="Number of Jobs to run in parallel. Default: unlimited. "
+          "For example, if 4 Jobs are added via job_runner.add_parallel(..), and then the pipeline is run with -p 3, "
+          "then 3 of the 4 jobs will be launched right away in parallel, and the 4th job will be launched as soon as "
+          "one of the 3 completes.", default=1)
+    #p.add("--email", dest="email_addresses", action="append", help="Send an email to the given email "
+    #    "address(es) when all jobs complete.")
+
+    #p.add("--clean", dest="clean", action="store_true", help="Deletes output files for all commands. Can be "
+    #    " used with -b, -e and/or -o to delete output files from only a subset of the steps.")
+
+
 
 class Job:
     """Represents a sequence of commands that should run in series."""
 
     def __init__(self,
                  cmd=None,
-                 working_directory=None,
-                 label="",
+                 working_directory="",
+                 name="",
                  log_directory="logs",
                  **kwargs):
         """
         Args:
             cmd: if this Job consists of a single command rather than a series
                 of them, it can be specified here.
-            dir: directory where to execute commands. Default: current directory
-            label: short name for this job to be used for logging
+            working_directory: directory where to execute commands. Default: current directory
+            name: short name for this job to be used for logging
             log_directory: where to store log files
-            **kwargs: args to pass to
+            **kwargs: additional args to pass to self.add(..)
         """
         self.directory = working_directory
-        self.label = label
-
-        self.log_filename = os.path.join(working_directory, log_directory, (label+".log") if label else "job.log")
+        self.name = name
+        
+        self.log_filename = os.path.join(working_directory, log_directory, (name+".log") if name else "job.log")
 
         self.next_command_id = 1  # used to give each command in this job a unique id
-        self.command_objs = [] # Init the list of __command_struct objects representing actual commands
-
+        self.command_objs = []    # the list of __command_struct objects representing actual commands
         if cmd:
-            self.add(cmd=cmd, working_directory=working_directory, label=label, **kwargs)
+            self.add(cmd=cmd, **kwargs)
         elif kwargs:
-            raise ValueError("kwargs (%s) should only be used when cmd != None " % (str(kwargs)))
+            raise ValueError("kwargs (%s) should only be used when cmd is not None " % (str(kwargs)))
 
     def add(self,
             cmd,
@@ -54,7 +86,7 @@ class Job:
             output_filenames = None,
             dir = None,
             name = None,
-            use_tmp_output_filenames = None,
+            use_tmp_output_filenames = True,
             num_threads_used = 1,
             memory_in_gb = 8,
             needs_to_run_checker = None,
@@ -116,7 +148,10 @@ class Job:
         def OUT_string_match_handler(match):
             filename = match.group(1)
             output_filenames.append(filename.strip())
-            return filename # replace the "OUT:filename" string with "filename"
+            if use_tmp_output_filenames:
+                return "OUT:%s" % filename # keep the OUT: tag so temp filenames can be substituted
+            else:
+                return filename            # replace the "OUT:filename" string with "filename"
         def NUM_THREADS_string_match_handler(match):
             num_threads_string = match.group(1)
             try:
@@ -125,10 +160,10 @@ class Job:
                 print("NUM_THREADS: annotation attached to '" + num_threads_string + "'. Integer required.")
             return num_threads_string # replace the "OUT:filename" string with "filename"
 
+
         cmd = re.sub("IN:([^\s:]+\s?):?", IN_string_match_handler, cmd)
         cmd = re.sub("OUT:([^\s:]+\s?):?", OUT_string_match_handler, cmd)
         cmd = re.sub("NUM_THREADS:([^\s:]+\s?):?", NUM_THREADS_string_match_handler, cmd)
-
 
         # eliminate any duplicates
         input_filenames = list(set(input_filenames))
@@ -198,45 +233,14 @@ class JobRunner:
         if job:
             self.add_parallel(job)
 
-        p = configargparse.getArgumentParser() # usage="usage: %prog [options] [arg1] .. ")
-
-        g = p.add_argument_group("Modify execution.")
-        g.add("--LSF", dest="use_LSF", action="store_true", help="Execute each command as an LSF job.")
-        g.add("--SGE", dest="use_SGE", action="store_true", help="Execute each command as an SGE job.")
-        g.add("-t", "--test", dest="is_test", action="store_true", help="Prints all commands without "
-            "actually running them. -t overrides all other options (eg. -f, -F).")
-        g.add("-F", "--force_all", dest="should_force_all", action="store_true", help="Forces execution of all commands "
-            "even if their output files are up to date.")
-        g.add("-f", "--force", dest="force_these", action="append", help="Forces execution of specific step(s) "
-            "(-f 1.1  or -f myscript) even if their output files are up to date.")
-
-        g = p.add_argument_group("Select subset of commands.")
-        g.add("-o", "--only", dest="only_these", action="append", help="Only execute commands matching the "
-            "given pattern (eg. -o 1.3 or -o myscript). -o can be specified more than once to run several specific "
-            "commands and nothing else. -o can be used with -f, -F to force the execution of the given command(s).")
-        g.add("-b", "--begin", dest="begin_with_these", action="append", help="Execute commands starting at this "
-            "command (eg. -b 1.3 or -b myscript). -b can be specified more than once, in which case they are OR'd "
-            "together. -b can be used together with -e and/or -f, -F to execute a specific subset of commands.")
-        g.add("-e", "--end", dest="end_with_these", action="append", help="Execute commands up to and including this "
-            "command (eg. -e 1.3 or -e myscript). -e can be specified more than once, in which case they are OR'd "
-            "together. -e can be used together with -b and/or -f, -F to execute a specific subset of commands.")
-
-        g = p.add_argument_group("Misc.")
-        g.add("-p", "--num_processes", type=int, help="Number of Jobs to run in parallel. Default: unlimited. "
-            "For example, if 4 Jobs are added via job_runner.add_parallel(..), and then the pipeline is run with -p 3, "
-            "then 3 of the 4 jobs will be launched right away in parallel, and the 4th job will be launched as soon as "
-            "one of the 3 completes.", default=1)
-        g.add("--email", dest="email_addresses", action="append", help="Send an email to the given email "
-            "address(es) when all jobs complete.")
-
-        #p.add("", "--clean", dest="clean", action="store_true", help="Deletes output files for all commands. Can be
-        # " used with -b, -e and/or -o to delete output files from only a subset of the steps.")
-
+        init_command_line_args()
+        
+        p = configargparse.getArgumentParser()
         opts, args  = p.parse_known_args()
 
         self.is_test = opts.is_test
-        self.use_SGE = opts.use_SGE
-        self.use_LSF = opts.use_LSF
+        self.use_SGE = None  # opts.use_SGE 
+        self.use_LSF = None  # opts.use_LSF
 
         self.should_force_all = opts.should_force_all
         self.force_these = opts.force_these
@@ -244,10 +248,9 @@ class JobRunner:
         self.only_these = opts.only_these
         self.begin_with_these = opts.begin_with_these
         self.end_with_these = opts.end_with_these
-
+    
         self.num_processes = opts.num_processes
-
-        self.use_tmp_output_filenames = True
+        self.clean = None # opts.clean
 
 
     def add_parallel(self, job):
@@ -263,21 +266,21 @@ class JobRunner:
 
     def start(self):
         # if -c arg and not -F arg, warn user about which files will be deleted
-        #if self.clean and not self.should_force_all:
-        #	print("WARNING: -c arg used. The following files will be deleted: ")
-        #	for job in self.jobs:
-        #		for command_obj in job.command_objs:
-        #			for output_filename in command_obj.output_filenames:
-        #				print("   " + output_filename)
-        #
-        #
-        #	while True:
-        #		answer = raw_input("Do you want to delete these files [y/n]?").lower().strip()
-        #		if answer:
-        #			if answer == "y" or answer == "yes":
-        #				break
-        #			elif answer == "n" or answer == "no":
-        #				return
+        if self.clean and not self.should_force_all:
+        	print("WARNING: -c arg used. The following files will be deleted: ")
+        	for job in self.jobs:
+        		for command_obj in job.command_objs:
+        			for output_filename in command_obj.output_filenames:
+        				print("   " + output_filename)
+        
+        
+        	while True:
+        		answer = raw_input("Do you want to delete these files [y/n]?").lower().strip()
+        		if answer:
+        			if answer == "y" or answer == "yes":
+        				break
+        			elif answer == "n" or answer == "no":
+        				return
 
 
 
@@ -287,14 +290,20 @@ class JobRunner:
             job_queues[i % len(job_queues)].append(job)  # assign job i to the next job_queue
 
         # execute each job queue on a separate thread
-        print("Starting %d threads to run %d jobs." % (len(job_queues), len(self.jobs)))
+        if len(self.jobs) > 0:
+            print("Starting %d threads to run %d jobs." % (len(job_queues), len(self.jobs)))
+
         for i, job_queue in enumerate(job_queues):
             thread = threading.Thread(target=self._execute_jobs, args=[job_queue], verbose=False)
             thread.start()
             thread.join(5) # Let thread run 5 seconds before starting next thread so their outputs don't get jumbled
             self.threads.append(thread)
 
-    def run(self):
+    def run(self, job=None):
+        """Run the job(s) added previously through add_parallel(..), followed by the job (if any) passed in as an arg."""        
+        if job is not None:
+            self.add_parallel(job)
+
         self.start()
         self.wait_for_jobs_to_finish()
 
@@ -375,14 +384,6 @@ class JobRunner:
                     directory = command_obj.directory  # over-ride job directory with command-specific directory
                 directory = os.path.abspath(directory)
 
-                # inherit use_tmp_output_filenames from JobRunner, Job, command_obj
-                use_tmp_output_filenames = self.use_tmp_output_filenames
-                if job.use_tmp_output_filenames != None:
-                    use_tmp_output_filenames = job.use_tmp_output_filenames
-                if command_obj.use_tmp_output_filenames != None:
-                    use_tmp_output_filenames = command_obj.use_tmp_output_filenames
-
-
                 # check whether, if -b was used, the current command matches the string provided to -b
                 if self.begin_with_these and not job.began_executing_commands:
                     for begin_with_arg in self.begin_with_these:
@@ -423,23 +424,28 @@ class JobRunner:
                     force_string = ""
 
                 # handle -c arg
-                #if self.clean and not self.should_force_all:
-                #    for output_filename in command_obj.output_filenames:
-                #        abs_output_filename = get_absolute_path(output_filename, directory)
-                #        if not os.path.isfile(abs_output_filename):
-                #            job_log.writeln("Not there: " + output_filename, cmd_name=command_obj.name)
-                #        else:
-                #            if not self.is_test:
-                #                job_log.writeln("Deleting: " + output_filename, cmd_name=command_obj.name)
-                #                os.remove(abs_output_filename)
-                #            else:
-                #                job_log.writeln("Test. Would have deleted: " + output_filename, cmd_name=command_obj.name)
+                if self.clean and not self.should_force_all:
+                    for output_filename in command_obj.output_filenames:
+                        abs_output_filename = get_absolute_path(output_filename, directory)
+                        if not os.path.isfile(abs_output_filename):
+                            job_log.writeln("Not there: " + output_filename, cmd_name=command_obj.name)
+                        else:
+                            if not self.is_test:
+                                job_log.writeln("Deleting: " + output_filename, cmd_name=command_obj.name)
+                                os.remove(abs_output_filename)
+                            else:
+                                job_log.writeln("Test. Would have deleted: " + output_filename, cmd_name=command_obj.name)
 
                 # modify command so that output will be written to temp files first, and, upon successful completion of the command, moved to the original output filenames.
+                use_tmp_output_filenames = command_obj.use_tmp_output_filenames
                 if use_tmp_output_filenames:
                     for output_filename in command_obj.output_filenames:
                         temp_output_filename = os.path.join(os.path.dirname(output_filename), "tmp."+ self.time_stamp +"." + os.path.basename(output_filename))
-                        command_obj.command = command_obj.command.replace(output_filename, temp_output_filename)
+                        command_with_tmp_filenames = command_obj.command.replace("OUT:"+output_filename, temp_output_filename)
+                        if command_with_tmp_filenames != command_obj.command:
+                            command_obj.command = command_with_tmp_filenames
+                        else:
+                            command_obj.command = command_obj.command.replace(output_filename, temp_output_filename)
 
                 # check whether the command needs to run
                 if not self.is_test and ((command_obj.output_filenames and command_obj.input_filenames) or command_obj.needs_to_run_checker):
@@ -545,7 +551,7 @@ class JobRunner:
         else:
             spawned_process.wait()
 
-        if spawned_process.returncode != None and spawned_process.returncode != 0:
+        if spawned_process.returncode is not None and spawned_process.returncode != 0:
             raise Exception("Non-zero return code: " + str(spawned_process.returncode))
 
 
@@ -617,7 +623,7 @@ class JobRunner:
         else:
             spawned_qsub_process.wait()
 
-        if spawned_qsub_process.returncode != None and spawned_qsub_process.returncode != 0:
+        if spawned_qsub_process.returncode is not None and spawned_qsub_process.returncode != 0:
             raise Exception("Non-zero return code: " + str(spawned_qsub_process.returncode))
 
 
@@ -700,7 +706,7 @@ class JobRunner:
         else:
             spawned_qsub_process.wait()
 
-        if spawned_qsub_process.returncode != None and spawned_qsub_process.returncode != 0:
+        if spawned_qsub_process.returncode is not None and spawned_qsub_process.returncode != 0:
             raise Exception("Non-zero return code: " + str(spawned_qsub_process.returncode))
 
 
@@ -775,7 +781,7 @@ class JobRunner:
             abs_output_filename = get_absolute_path(output_filename, directory)
 
             if not os.access(abs_output_filename, os.R_OK):
-                log_stream.write("Output (last mod N/A): %s  [doesn't exist]\n" % output_filename)
+                log_stream.write("Output (last mod N/A): %s  [doesn't exist yet]\n" % output_filename)
                 return_value = True
                 continue
 
@@ -850,8 +856,8 @@ class LogStream:
         self.write(string + "\n", print_time, num_tabs, cmd_name)
 
     def write(self, string="", print_time=None, num_tabs=None, cmd_name=""):
-        print_time = print_time if print_time != None else self.print_time
-        num_tabs = num_tabs if num_tabs != None else self.num_tabs
+        print_time = print_time if print_time is not None else self.print_time
+        num_tabs = num_tabs if num_tabs is not None else self.num_tabs
 
         final_string = ""
         if print_time:
@@ -908,8 +914,6 @@ def open_file(path, mode="r"):
     else:
         path = os.path.normpath(path)
         return open(path, mode)
-
-
 
 
 if __name__ == "__main__":
