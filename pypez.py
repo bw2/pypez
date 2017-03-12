@@ -204,7 +204,7 @@ class JobRunner:
 
         return JobRunner._instance
 
-    def __init__(self, job=None, num_processes=sys.maxint):
+    def __init__(self, job=None, num_processes=sys.maxint, shell='/bin/bash'):
         """
         Args:
             job: if only one Job will be run. Otherwise, use .add_parallel(..)
@@ -225,6 +225,7 @@ class JobRunner:
         self.time_stamp = time.strftime("%Y-%m-%d_%H.%M.%S")
         self.next_job_id = 1  # the job id is prepended to the command id in log output
 
+        self.shell = shell
         self._fix_keyboard_interrupt_handling()
 
         self.jobs = []  # jobs to run in parallel
@@ -494,7 +495,7 @@ class JobRunner:
                     if not command_obj.ignore_failure:
                         self.pipeline_shutdown_reason = "[" + str(command_obj.name) + "]"  # prevent any new jobs from starting
                     job_log.writeln("    COMMAND FAILED - Exception: " + str(e), cmd_name=command_obj.name)
-                    continue
+                    sys.exit(1)
 
                 if not self.is_test and use_tmp_output_filenames:
                     for output_filename in command_obj.output_filenames:
@@ -539,7 +540,7 @@ class JobRunner:
             temp_log_file = open(temp_log_filename, "w+")
             #temp_log_file = tempfile.NamedTemporaryFile(bufsize=0) #
 
-        spawned_process = Popen(command_obj.command, bufsize = 0, shell=True, cwd=directory, stdout=temp_log_file, stderr=temp_log_file)
+        spawned_process = Popen(command_obj.command, bufsize = 0, shell=True, cwd=directory, stdout=temp_log_file, stderr=temp_log_file, executable=self.shell)
 
         if temp_log_file:
             # while the job is running, continually read from the temp_log_file and copy this to the job_log
